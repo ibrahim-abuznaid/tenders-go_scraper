@@ -1,8 +1,10 @@
 /**************************************************
  * Usage:
- *    1. Run `npm install axios axios-cookiejar-support tough-cookie cheerio qs`
+ *    1. Run `npm install axios axios-cookiejar-support tough-cookie cheerio qs express`
  *    2. Run with `node scrap.js`
  **************************************************/
+const express = require('express');
+const bodyParser = require('body-parser'); // built-in in newer express versions, but here for clarity
 const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
@@ -33,8 +35,6 @@ async function scrapeTenders(inputs) {
 
   const $loginPage = cheerio.load(getLoginResponse.data);
 
-  // In many Laravel-based pages, CSRF tokens can appear in <input type="hidden" name="_token" value="...">
-  // or in <meta name="csrf-token" content="...">. Adjust to whichever is present:
   const csrfToken =
     $loginPage('input[name="_token"]').attr('value') ||
     $loginPage('meta[name="csrf-token"]').attr('content');
@@ -60,14 +60,13 @@ async function scrapeTenders(inputs) {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0',
       Referer: LOGIN_URL,
     },
-    maxRedirects: 0, // If TendersGo returns a redirect, we can detect successful login
-    validateStatus: (status) => status === 200 || status === 302 || status === 303,
+    maxRedirects: 0,
+    validateStatus: (status) =>
+      status === 200 || status === 302 || status === 303,
   });
 
-  // If your login is successful, TendersGo may return a redirect (302/303) or load the page (200).
   console.log('Login response status:', loginResponse.status);
 
-  // Optional: Check if login failed based on content
   if (loginResponse.status !== 200 && loginResponse.status !== 302 && loginResponse.status !== 303) {
     throw new Error('Login failed - unexpected status code: ' + loginResponse.status);
   }
@@ -81,9 +80,7 @@ async function scrapeTenders(inputs) {
   // ------------------------------------------
   // 4. Scraper logic
   // ------------------------------------------
-  // function that extracts the tender ID from the URL
   const extractTenderId = (url) => {
-    // Example pattern: /tenders/<country>/tender-notice/<id>
     const matches = url.match(/tenders\/([^/]+)\/tender-notice\/([^/]+)/);
     if (matches && matches[1] && matches[2]) {
       return `${matches[1]}-${matches[2]}`;
@@ -91,7 +88,6 @@ async function scrapeTenders(inputs) {
     return '';
   };
 
-  // define the CSS selectors for the fields
   const selectors = {
     title: 'table.table-striped tr:nth-child(1) td span',
     country: 'table.table-striped tr:nth-child(2) td a',
@@ -109,9 +105,7 @@ async function scrapeTenders(inputs) {
     url: 'table.table-striped tr:nth-child(13) td div a[href]',
   };
 
-  // function to scrape a single URL
   async function scrapeSingleTender(url) {
-    // fetch the page
     const tenderResponse = await client.get(url, {
       headers: {
         'User-Agent':
@@ -123,10 +117,8 @@ async function scrapeTenders(inputs) {
       throw new Error(`Failed to fetch page for ${url}: status ${tenderResponse.status}`);
     }
 
-    // parse the response
     const $ = cheerio.load(tenderResponse.data);
 
-    // fill the results into an object
     const tenderData = {};
     tenderData['tender-url'] = url;
     tenderData['tender-id'] = extractTenderId(url);
@@ -143,7 +135,6 @@ async function scrapeTenders(inputs) {
     return tenderData;
   }
 
-  // function to scrape multiple tenders
   const results = [];
   for (const url of inputs.urls) {
     try {
@@ -152,13 +143,11 @@ async function scrapeTenders(inputs) {
     } catch (err) {
       console.error(`Error scraping ${url}:`, err.message);
     }
-    // optional: small delay to be polite
+    // optional delay
     await new Promise((r) => setTimeout(r, 1000));
   }
 
-  // ------------------------------------------
-  // 5. Write results to local file and return
-  // ------------------------------------------
+  // Optionally write results to a local file
   await fs.writeFile('tender_data.json', JSON.stringify(results, null, 4), 'utf-8');
   console.log('Scraping complete. Results saved to tender_data.json');
 
@@ -166,17 +155,33 @@ async function scrapeTenders(inputs) {
 }
 
 // ------------------------------------------
-// Example usage
+// Express Server Setup
 // ------------------------------------------
-(async () => {
-  try {
-    const urlsToScrape = [
-      'https://app.tendersgo.com/tenders/hungary/tender-notice/rP5BmA1q'
-    ];
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-    const finalData = await scrapeTenders({ urls: urlsToScrape });
-    console.log('Final returned data:\n', finalData);
+// Use JSON body parser middleware
+app.use(express.json());
+
+// Define the POST endpoint for scraping
+app.post('/scrape', async (req, res) => {
+  try {
+    // Expecting JSON payload with a property "urls": [array of URLs]
+    const { urls } = req.body;
+    if (!urls || !Array.isArray(urls)) {
+      return res.status(400).json({ error: 'Invalid payload. Expected "urls" as an array.' });
+    }
+
+    // Call the scraping function
+    const scrapedData = await scrapeTenders({ urls });
+    res.json({ data: scrapedData });
   } catch (error) {
-    console.error('Error in main script:', error.message);
+    console.error('Error in /scrape:', error.message);
+    res.status(500).json({ error: error.message });
   }
-})();
+});
+
+// Start the server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
